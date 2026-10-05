@@ -1,0 +1,7 @@
+{
+  "terminals": [
+    {"id": "T1", "net": "A", "layer": "top", "x": 2.0, "y": 2.5},
+    {"id": "T2", "net": "B", "layer": "top", "x": 15.0, "y": 2.5}
+  ],
+  "holes": []
+}

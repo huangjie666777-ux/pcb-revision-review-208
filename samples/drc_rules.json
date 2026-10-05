@@ -1,0 +1,10 @@
+{
+  "default_clearance_mm": 0.2,
+  "clearance_overrides": [
+    {"nets": ["A", "B"], "clearance_mm": 0.5}
+  ],
+  "keepouts": [
+    {"id": "K1", "layer": "bottom",
+     "polygon": [[1.0, 1.0], [2.0, 1.0], [2.0, 2.0], [1.0, 2.0]]}
+  ]
+}

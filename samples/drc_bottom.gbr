@@ -1,0 +1,12 @@
+G04 drc demo bottom: floating copper pour *
+%FSLAX24Y24*%
+%MOMM*%
+%LPD*%
+G36*
+X0Y0D02*
+X50000Y0D01*
+X50000Y50000D01*
+X0Y50000D01*
+X0Y0D01*
+G37*
+M02*

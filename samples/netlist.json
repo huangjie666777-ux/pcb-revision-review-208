@@ -1,0 +1,13 @@
+{
+  "terminals": [
+    {"id": "T1", "net": "GND", "layer": "top", "x": 2.0, "y": 2.0},
+    {"id": "T2", "net": "VCC", "layer": "bottom", "x": 2.0, "y": 8.0},
+    {"id": "T3", "net": "SIG", "layer": "top", "x": 28.0, "y": 5.0},
+    {"id": "T4", "net": "SIG", "layer": "bottom", "x": 28.0, "y": 8.0},
+    {"id": "T5", "net": "GND", "layer": "top", "x": 100.0, "y": 100.0}
+  ],
+  "holes": [
+    {"id": "H1", "x": 5.0, "y": 5.0, "diameter": 1.0, "plated": true},
+    {"id": "H2", "x": 10.0, "y": 5.0, "diameter": 2.0, "plated": false}
+  ]
+}

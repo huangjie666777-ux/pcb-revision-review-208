@@ -1,0 +1,16 @@
+
+G04 sample2: inch units, full circle, CW arc *
+%FSLAX24Y24*%
+%MOIN*%
+%ADD10C,0.0200*%
+%ADD11C,0.1000*%
+G75*
+D10*
+X0Y0D02*
+G02*
+X0Y0I50000J0D01*
+G01*
+D11*
+X100000Y0D03*
+M02*
+
