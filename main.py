@@ -11,12 +11,15 @@ from copper_rev208.geometry import build_geometry, summarize
 from copper_rev208.netcheck import (NetlistError, analyze, connectivity,
                                     load_netlist, report)
 from copper_rev208.parser import Parser
+from copper_rev208.revision import RevisionError, review_revision, validate_transform
+from copper_rev208.revision_svg import copper_changes_to_svg
 from copper_rev208.svg_export import geometry_to_svg
 
 app = FastAPI(title="Gerber Revision Review 208")
 
 # svg_id -> (svg_text, stats)
 _results = {}
+_revision_results = {}
 
 
 def _rebuild(text, tolerance):
@@ -91,6 +94,15 @@ async def _load_netlist_upload(netlist):
             "error": exc.message, "position": exc.position})
 
 
+async def _load_named_netlist(netlist, label):
+    try:
+        return load_netlist(await netlist.read())
+    except NetlistError as exc:
+        raise HTTPException(422, {
+            "error": "%s网表: %s" % (label, exc.message),
+            "position": exc.position})
+
+
 @app.post("/api/netcheck")
 async def netcheck(top: UploadFile = File(...),
                    bottom: UploadFile = File(...),
@@ -132,3 +144,50 @@ async def drc(top: UploadFile = File(...),
     result["netcheck"] = net_report
     result["ok"] = result["ok"] and net_report["ok"]
     return result
+
+
+@app.post("/api/revision-review")
+async def revision_review(
+    old_top: UploadFile = File(...), old_bottom: UploadFile = File(...),
+    new_top: UploadFile = File(...), new_bottom: UploadFile = File(...),
+    old_netlist: UploadFile = File(...), new_netlist: UploadFile = File(...),
+    rules: UploadFile = File(...), dx_mm: float = Form(...),
+    dy_mm: float = Form(...), rotation_deg: float = Form(...),
+    tolerance: float = Form(0.01)):
+    if tolerance <= 0:
+        raise HTTPException(422, "tolerance 必须为正数(毫米)")
+    try:
+        dx, dy, rotation = validate_transform(dx_mm, dy_mm, rotation_deg)
+    except RevisionError as exc:
+        raise HTTPException(422, {"error": exc.message, "position": exc.position})
+    old_geoms = await _build_layers(old_top, old_bottom, tolerance)
+    new_geoms = await _build_layers(new_top, new_bottom, tolerance)
+    old_nets = await _load_named_netlist(old_netlist, "旧版")
+    new_nets = await _load_named_netlist(new_netlist, "新版")
+    try:
+        rule_set = load_rules(await rules.read(), {t.net for t in old_nets[0]})
+    except NetlistError as exc:
+        raise HTTPException(422, {"error": exc.message, "position": exc.position})
+    try:
+        result = review_revision(
+            {"top": old_geoms["顶层"], "bottom": old_geoms["底层"]},
+            {"top": new_geoms["顶层"], "bottom": new_geoms["底层"]},
+            old_nets, new_nets, rule_set, dx, dy, rotation, tolerance)
+    except NetlistError as exc:
+        raise HTTPException(422, {"error": exc.message, "position": exc.position})
+    svg = copper_changes_to_svg(result.pop("_svg_layers"))
+    svg_id = uuid.uuid4().hex
+    _revision_results[svg_id] = svg
+    result["svg_id"] = svg_id
+    result["svg_url"] = "/api/revision-review/%s/svg" % svg_id
+    return result
+
+
+@app.get("/api/revision-review/{svg_id}/svg")
+async def download_revision_svg(svg_id: str):
+    svg = _revision_results.get(svg_id)
+    if svg is None:
+        raise HTTPException(404, "结果不存在或已过期")
+    return Response(svg, media_type="image/svg+xml", headers={
+        "Content-Disposition":
+        'attachment; filename="revision_%s.svg"' % svg_id[:8]})

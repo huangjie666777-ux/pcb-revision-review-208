@@ -1,0 +1,7 @@
+{
+  "default_clearance_mm": 0.2,
+  "clearance_overrides": [
+    {"nets": ["A", "B"], "clearance_mm": 0.5}
+  ],
+  "keepouts": []
+}

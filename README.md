@@ -8,6 +8,8 @@
 - `copper_rev208/geometry.py` — 曝光几何引擎: 圆弧离散、光圈缓冲、区域填充、LPD/LPC 按序合成(Shapely)
 - `copper_rev208/netcheck.py` — 双层网表核对: 孔盘扣除、铜岛提取、镀铜孔连通图、短/断路报告
 - `copper_rev208/drc.py` — 制造规则审查: 规则 JSON 校验、同层铜间距量测、分层禁铜区接触检查
+- `copper_rev208/revision.py` — ECO 评审: 新版刚体变换、两版扣孔铜差分、稳定端子连通变化
+- `copper_rev208/revision_svg.py` — 分层变更 SVG, 加铜/删铜/共有铜三色导出
 - `copper_rev208/svg_export.py` — 最终几何 → SVG(Y 轴翻转、evenodd 孔洞)
 - `main.py` — FastAPI 请求处理: 上传、参数校验、错误响应、结果暂存
 
@@ -143,11 +145,57 @@ curl -s -F "top=@samples/drc_top.gbr" -F "bottom=@samples/drc_bottom.gbr" \
 实测距离、一对最近点)、`keepout_violations`(区域 ID、铜岛、接触位置)、
 `netcheck`(短/断路报告)与 `ok`。空层与无违规正常返回。
 
+### POST /api/revision-review
+
+multipart 一次上传两版工程与共用制造规则:
+
+- `old_top` / `old_bottom` / `old_netlist`: 旧版顶底 Gerber 与网表
+- `new_top` / `new_bottom` / `new_netlist`: 新版顶底 Gerber 与网表
+- `rules`: 两版共用制造规则 JSON
+- `dx_mm` / `dy_mm`: 新版到旧版的平移量(mm)
+- `rotation_deg`: 仅允许 `0`、`90`、`180`、`270`, 先绕原点逆时针旋转再平移
+- `tolerance`: 同一曲线离散误差(mm, 正数, 默认 0.01)
+
+变换同时作用于新版铜、端子和孔; 顶层仍与顶层比较, 底层仍与底层比较,
+不做自动配准、层交换或镜像。两版端子 ID、设计网名和层别必须相同,
+位置允许变化; ID、网名或层别不一致会定位并拒绝整单。
+
+```bash
+curl -s \
+  -F old_top=@samples/rev_old_top.gbr \
+  -F old_bottom=@samples/rev_old_bottom.gbr \
+  -F new_top=@samples/rev_new_top.gbr \
+  -F new_bottom=@samples/rev_new_bottom.gbr \
+  -F old_netlist=@samples/rev_old_netlist.json \
+  -F new_netlist=@samples/rev_new_netlist.json \
+  -F rules=@samples/rev_rules.json \
+  -F rotation_deg=90 -F dx_mm=0 -F dy_mm=0 \
+  http://127.0.0.1:8000/api/revision-review
+```
+
+报告统一在旧版坐标系返回:
+
+- `copper_changes.top/bottom`: `added_copper`、`removed_copper`、`common_copper`,
+  每类含面积、区域数和保留孔洞的边界
+- `connectivity_changes`: `added_connections` 与 `lost_connections` 为无序稳定端子 ID 对,
+  仅比较两版均落铜的端子; `landing_status_changes` 单独列新增落铜和失去落铜
+- `old_review` / `new_review`: 两版各自的制造违规和短/断路报告
+- 空层、无铜变化正常返回面积 0、区域数 0; 服务不改写上传文件, 不自动修板
+
+### GET /api/revision-review/{svg_id}/svg
+
+下载分层变更 SVG。绿色为加铜, 红色为删铜, 灰色为共有铜,
+孔洞使用 evenodd 保留, 坐标与评审报告一致(旧版坐标系)。
+
+```bash
+curl -OJ http://127.0.0.1:8000/api/revision-review/<svg_id>/svg
+```
+
 ```bash
 .venv/bin/python -m pytest tests -q
 .venv/bin/python -m compileall -q copper_rev208 main.py tests
 ```
 
-样例见 `samples/`: `sample1.gbr`(区域+闪光+走线+圆弧+LPC 开孔后恢复)、`sample2.gbr`(英寸单位+整圆+顺时针圆弧); 网表核对样例 `net_top.gbr`/`net_bottom.gbr`/`netlist.json`(镀铜孔连接顶底、非镀铜孔扣铜、SIG 跨层断路、GND/VCC 经 H1 短路、T5 未落铜); 规则审查样例 `drc_top.gbr`/`drc_bottom.gbr`/`drc_netlist.json`/`drc_rules.json`(顶层 A/B 铜块 0.3mm 间距触发 0.5mm 覆盖阈值, 底层浮铜触碰禁铜区 K1)。
+样例见 `samples/`: `sample1.gbr`(区域+闪光+走线+圆弧+LPC 开孔后恢复)、`sample2.gbr`(英寸单位+整圆+顺时针圆弧); 网表核对样例 `net_top.gbr`/`net_bottom.gbr`/`netlist.json`(镀铜孔连接顶底、非镀铜孔扣铜、SIG 跨层断路、GND/VCC 经 H1 短路、T5 未落铜); 规则审查样例 `drc_top.gbr`/`drc_bottom.gbr`/`drc_netlist.json`/`drc_rules.json`(顶层 A/B 铜块 0.3mm 间距触发 0.5mm 覆盖阈值, 底层浮铜触碰禁铜区 K1); ECO 样例 `rev_old_*`、`rev_new_*` 与 `rev_rules.json`(新版旋转 90 度后对齐, 顶层有 20mm² 加铜)。
 
 Repository: https://github.com/huangjie666777-ux/pcb-revision-review-208
