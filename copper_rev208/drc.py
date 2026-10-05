@@ -136,13 +136,15 @@ def _threshold(comp_a, comp_b, comp_nets, default, overrides):
     """两实际网络间适用阈值: 覆盖值替代默认, 多名称取覆盖最大值。"""
     nets_a = comp_nets.get(comp_a, set())
     nets_b = comp_nets.get(comp_b, set())
+    if not nets_a or not nets_b:
+        return default
+    # 逐名称对取值: 有覆盖用覆盖值, 无覆盖的组合回退默认阈值
     values = []
-    for pair, value in overrides.items():
-        name_a, name_b = tuple(pair)
-        if ((name_a in nets_a and name_b in nets_b)
-                or (name_a in nets_b and name_b in nets_a)):
-            values.append(value)
-    return max(values) if values else default
+    for name_a in nets_a:
+        for name_b in nets_b:
+            values.append(overrides.get(frozenset((name_a, name_b)),
+                                        default))
+    return max(values)
 
 
 def _round_pt(point):

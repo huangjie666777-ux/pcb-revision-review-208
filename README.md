@@ -1,6 +1,6 @@
 # Gerber Revision Review 208
 
-接收单层 ASCII Gerber 光绘文件, 重建实际铜层轮廓, 输出面积/包围盒/连通块/孔洞统计, 并从同一最终几何生成 SVG 下载; 亦可一次上传顶/底两份 Gerber 与 JSON 网表做双层板导电关系核对, 或再附 JSON 制造规则做铜间距与禁铜区审查(只报告, 不裁铜或自动修板)。纯后端, 无前端页面。
+接收单层 ASCII Gerber 光绘文件, 重建实际铜层轮廓, 输出面积/包围盒/连通块/孔洞统计, 并从同一最终几何生成 SVG 下载; 亦可一次上传顶/底两份 Gerber 与 JSON 网表做双层板导电关系核对, 或再附 JSON 制造规则做铜间距与禁铜区审查(只报告, 不裁铜或自动修板)。工厂收到改版 PCB 时, 可上传旧/新两版顶底 Gerber、两版网表与共用制造规则做工程变更评审: 几何对齐后按层差分铜的增删、按稳定端子 ID 对比连通变化, 并附两版短断路与制造违规报告。纯后端, 无前端页面。
 
 ## 模块分工
 
@@ -8,7 +8,8 @@
 - `copper_rev208/geometry.py` — 曝光几何引擎: 圆弧离散、光圈缓冲、区域填充、LPD/LPC 按序合成(Shapely)
 - `copper_rev208/netcheck.py` — 双层网表核对: 孔盘扣除、铜岛提取、镀铜孔连通图、短/断路报告
 - `copper_rev208/drc.py` — 制造规则审查: 规则 JSON 校验、同层铜间距量测、分层禁铜区接触检查
-- `copper_rev208/svg_export.py` — 最终几何 → SVG(Y 轴翻转、evenodd 孔洞)
+- `copper_rev208/review.py` — 工程变更评审: 新版几何旋转变换对齐、分层铜差分、端子对连通变化对比、两版报告汇总
+- `copper_rev208/svg_export.py` — 最终几何/分层变更 → SVG(Y 轴翻转、evenodd 孔洞、三类区域配色)
 - `main.py` — FastAPI 请求处理: 上传、参数校验、错误响应、结果暂存
 
 ## 支持的 Gerber 子集
@@ -143,11 +144,60 @@ curl -s -F "top=@samples/drc_top.gbr" -F "bottom=@samples/drc_bottom.gbr" \
 实测距离、一对最近点)、`keepout_violations`(区域 ID、铜岛、接触位置)、
 `netcheck`(短/断路报告)与 `ok`。空层与无违规正常返回。
 
+### POST /api/review
+
+工程变更评审。multipart 一次上传: `old_top`/`old_bottom` = 旧版顶/底
+Gerber, `new_top`/`new_bottom` = 新版顶/底 Gerber,
+`old_netlist`/`new_netlist` = 两版 JSON 网表(端子 ID 与设计网名必须
+一致, 位置可变), `rules` = 两版共用的 JSON 制造规则;
+表单字段 `rotation_deg`(新版到旧版旋转角, 限 0/90/180/270, 绕原点
+逆时针)、`translate_x`/`translate_y`(旋转后再平移, 单位 mm),
+`tolerance` = 曲线近似误差(mm, 正数, 默认 0.01)。
+变换同时作用于新版铜、端子和孔; 层不交换, 不自动配准或镜像;
+所有报告与 SVG 统一在旧版坐标系。
+
+```bash
+curl -s -F "old_top=@samples/rev_old_top.gbr" \
+     -F "old_bottom=@samples/rev_old_bottom.gbr" \
+     -F "new_top=@samples/rev_new_top.gbr" \
+     -F "new_bottom=@samples/rev_new_bottom.gbr" \
+     -F "old_netlist=@samples/rev_old_netlist.json" \
+     -F "new_netlist=@samples/rev_new_netlist.json" \
+     -F "rules=@samples/rev_rules.json" \
+     -F "rotation_deg=0" -F "translate_x=2.0" -F "translate_y=0.0" \
+     http://127.0.0.1:8000/api/review
+```
+
+评审内容:
+
+- `layers.{top,bottom}`: 同一曲线误差下按层差分 —— `added`(新版减旧版
+  加铜)、`removed`(旧版减新版删铜)、`common`(共有区域), 各含面积、
+  区域数与边界(外环+孔洞, 保留孔洞与细铜; 基于实体几何, 不比较文件
+  文本或包围盒); `svg_url` 下载分层变更 SVG(加铜绿/删铜红/共有铜色)。
+- `connectivity_changes`: 按稳定端子 ID 对比(不比较临时铜岛编号) ——
+  `added_connections`/`lost_connections` 为新增/失去连接的无序端子对,
+  仅统计两版均落铜的端子; `landed_status_changes` 单列落铜状态变化,
+  旧版已悬空的端子不会冒充新断路。
+- `old_revision`/`new_revision`: 两版各自的短/断路报告与制造违规报告
+  (共用同一套规则, 只报告, 不改写原文件或自动修板)。
+
+无变化与空层正常返回(面积 0、边界为空)。两版端子 ID/设计网名不一致、
+旋转角非法、Gerber/网表/规则任何输入错误都定位并拒绝整单(422)。
+
+### GET /api/review/{review_id}/svg/{layer}
+
+下载分层变更 SVG(`layer` 为 `top` 或 `bottom`, 附件形式, 旧版坐标系,
+Y 轴已翻转, 孔洞 evenodd 表达)。
+
+```bash
+curl -OJ http://127.0.0.1:8000/api/review/<review_id>/svg/top
+```
+
 ```bash
 .venv/bin/python -m pytest tests -q
 .venv/bin/python -m compileall -q copper_rev208 main.py tests
 ```
 
-样例见 `samples/`: `sample1.gbr`(区域+闪光+走线+圆弧+LPC 开孔后恢复)、`sample2.gbr`(英寸单位+整圆+顺时针圆弧); 网表核对样例 `net_top.gbr`/`net_bottom.gbr`/`netlist.json`(镀铜孔连接顶底、非镀铜孔扣铜、SIG 跨层断路、GND/VCC 经 H1 短路、T5 未落铜); 规则审查样例 `drc_top.gbr`/`drc_bottom.gbr`/`drc_netlist.json`/`drc_rules.json`(顶层 A/B 铜块 0.3mm 间距触发 0.5mm 覆盖阈值, 底层浮铜触碰禁铜区 K1)。
+样例见 `samples/`: `sample1.gbr`(区域+闪光+走线+圆弧+LPC 开孔后恢复)、`sample2.gbr`(英寸单位+整圆+顺时针圆弧); 网表核对样例 `net_top.gbr`/`net_bottom.gbr`/`netlist.json`(镀铜孔连接顶底、非镀铜孔扣铜、SIG 跨层断路、GND/VCC 经 H1 短路、T5 未落铜); 规则审查样例 `drc_top.gbr`/`drc_bottom.gbr`/`drc_netlist.json`/`drc_rules.json`(顶层 A/B 铜块 0.3mm 间距触发 0.5mm 覆盖阈值, 底层浮铜触碰禁铜区 K1); 变更评审样例 `rev_old_top.gbr`/`rev_old_bottom.gbr`/`rev_new_top.gbr`/`rev_new_bottom.gbr`/`rev_old_netlist.json`/`rev_new_netlist.json`/`rev_rules.json`(新版整体平移 -2mm, 评审时 translate_x=2.0 对齐: 顶层新增桥接走线连通 T1/T2 并加焊盘、删除旧焊盘, 底层铜块缩短使 T4 失去落铜)。
 
 Repository: https://github.com/huangjie666777-ux/pcb-revision-review-208

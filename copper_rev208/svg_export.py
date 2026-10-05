@@ -46,3 +46,50 @@ def geometry_to_svg(geom):
         % (_fmt(width), _fmt(height), _fmt(width), _fmt(height),
            _fmt(-minx), body)
     )
+
+
+_DIFF_COLORS = {
+    "common": "#b87333",   # 共有铜: 铜色
+    "added": "#2ca02c",    # 加铜: 绿
+    "removed": "#d62728",  # 删铜: 红
+}
+
+
+def _geom_paths(geom, max_y):
+    parts = []
+    for g in getattr(geom, "geoms", [geom]):
+        if g.geom_type != "Polygon" or g.is_empty:
+            continue
+        d = _ring_path(g.exterior.coords, max_y)
+        for interior in g.interiors:
+            d += _ring_path(interior.coords, max_y)
+        parts.append('<path d="%s"/>' % d)
+    return "".join(parts)
+
+
+def diff_to_svg(diff):
+    """分层变更 SVG: 加铜/删铜/共有三类区域以颜色区分(旧版坐标系)。"""
+    geoms = [diff[key] for key in ("common", "added", "removed")]
+    nonempty = [g for g in geoms if not g.is_empty]
+    if not nonempty:
+        return ('<svg xmlns="http://www.w3.org/2000/svg" '
+                'viewBox="0 0 1 1" width="1mm" height="1mm"/>\n')
+    minx = min(g.bounds[0] for g in nonempty)
+    miny = min(g.bounds[1] for g in nonempty)
+    maxx = max(g.bounds[2] for g in nonempty)
+    maxy = max(g.bounds[3] for g in nonempty)
+    width = max(maxx - minx, 1e-9)
+    height = max(maxy - miny, 1e-9)
+    groups = []
+    for key in ("common", "added", "removed"):
+        body = _geom_paths(diff[key], maxy)
+        if body:
+            groups.append('<g fill="%s" fill-rule="evenodd" '
+                          'stroke="none">%s</g>' % (_DIFF_COLORS[key], body))
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" '
+        'viewBox="0 0 %s %s" width="%smm" height="%smm">\n'
+        '<g transform="translate(%s,0)">%s</g>\n</svg>\n'
+        % (_fmt(width), _fmt(height), _fmt(width), _fmt(height),
+           _fmt(-minx), "".join(groups))
+    )

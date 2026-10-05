@@ -1,5 +1,6 @@
 
-"""FastAPI 请求处理层: 上传、铜层重建、SVG 下载、双层网表核对、制造规则审查。"""
+"""FastAPI 请求处理层: 上传、铜层重建、SVG 下载、双层网表核对、
+制造规则审查、工程变更评审。"""
 import uuid
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -11,12 +12,19 @@ from copper_rev208.geometry import build_geometry, summarize
 from copper_rev208.netcheck import (NetlistError, analyze, connectivity,
                                     load_netlist, report)
 from copper_rev208.parser import Parser
-from copper_rev208.svg_export import geometry_to_svg
+from copper_rev208.review import (compare_connectivity, layer_diff,
+                                  match_revisions, region_detail,
+                                  revision_reports, transform_geometry,
+                                  transform_holes, transform_terminals,
+                                  validate_transform)
+from copper_rev208.svg_export import diff_to_svg, geometry_to_svg
 
 app = FastAPI(title="Gerber Revision Review 208")
 
 # svg_id -> (svg_text, stats)
 _results = {}
+# review_id -> {"top": svg, "bottom": svg}
+_reviews = {}
 
 
 def _rebuild(text, tolerance):
@@ -132,3 +140,100 @@ async def drc(top: UploadFile = File(...),
     result["netcheck"] = net_report
     result["ok"] = result["ok"] and net_report["ok"]
     return result
+
+
+async def _load_rules_upload(rules, known_nets):
+    raw_rules = await rules.read()
+    try:
+        return load_rules(raw_rules, known_nets)
+    except NetlistError as exc:
+        raise HTTPException(422, {
+            "error": exc.message, "position": exc.position})
+
+
+@app.post("/api/review")
+async def review(old_top: UploadFile = File(...),
+                 old_bottom: UploadFile = File(...),
+                 old_netlist: UploadFile = File(...),
+                 new_top: UploadFile = File(...),
+                 new_bottom: UploadFile = File(...),
+                 new_netlist: UploadFile = File(...),
+                 rules: UploadFile = File(...),
+                 rotation_deg: float = Form(...),
+                 translate_x: float = Form(...),
+                 translate_y: float = Form(...),
+                 tolerance: float = Form(0.01)):
+    try:
+        rotation, dx, dy = validate_transform(rotation_deg, translate_x,
+                                              translate_y)
+    except NetlistError as exc:
+        raise HTTPException(422, {
+            "error": exc.message, "position": exc.position})
+    old_geoms = await _build_layers(old_top, old_bottom, tolerance)
+    new_geoms = await _build_layers(new_top, new_bottom, tolerance)
+    old_terminals, old_holes = await _load_netlist_upload(old_netlist)
+    new_terminals, new_holes = await _load_netlist_upload(new_netlist)
+    try:
+        match_revisions(old_terminals, new_terminals)
+    except NetlistError as exc:
+        raise HTTPException(422, {
+            "error": exc.message, "position": exc.position})
+    rule_set = await _load_rules_upload(
+        rules, {t.net for t in old_terminals})
+
+    # 新版铜/端子/孔整体变换到旧版坐标系(层不交换, 不自动配准)
+    new_top_geom = transform_geometry(new_geoms["顶层"], rotation, dx, dy)
+    new_bottom_geom = transform_geometry(new_geoms["底层"], rotation, dx, dy)
+    new_terminals = transform_terminals(new_terminals, rotation, dx, dy)
+    new_holes = transform_holes(new_holes, rotation, dx, dy)
+
+    try:
+        old_conn, old_reports = revision_reports(
+            old_geoms["顶层"], old_geoms["底层"], old_terminals, old_holes,
+            tolerance, rule_set)
+        new_conn, new_reports = revision_reports(
+            new_top_geom, new_bottom_geom, new_terminals, new_holes,
+            tolerance, rule_set)
+    except NetlistError as exc:
+        raise HTTPException(422, {
+            "error": exc.message, "position": exc.position})
+
+    review_id = uuid.uuid4().hex
+    layers = {}
+    svgs = {}
+    for layer, old_geom, new_geom in (
+            ("top", old_geoms["顶层"], new_top_geom),
+            ("bottom", old_geoms["底层"], new_bottom_geom)):
+        diff = layer_diff(old_geom, new_geom)
+        svgs[layer] = diff_to_svg(diff)
+        layers[layer] = {
+            "added": region_detail(diff["added"]),
+            "removed": region_detail(diff["removed"]),
+            "common": region_detail(diff["common"]),
+            "svg_url": "/api/review/%s/svg/%s" % (review_id, layer),
+        }
+    _reviews[review_id] = svgs
+
+    return {
+        "review_id": review_id,
+        "transform": {"rotation_deg": rotation,
+                      "translate_x": dx, "translate_y": dy},
+        "coordinate_system": "旧版坐标系",
+        "layers": layers,
+        "connectivity_changes": compare_connectivity(old_conn, new_conn),
+        "old_revision": old_reports,
+        "new_revision": new_reports,
+        "ok": old_reports["ok"] and new_reports["ok"],
+    }
+
+
+@app.get("/api/review/{review_id}/svg/{layer}")
+async def download_review_svg(review_id: str, layer: str):
+    svgs = _reviews.get(review_id)
+    if svgs is None or layer not in svgs:
+        raise HTTPException(404, "结果不存在或已过期")
+    return Response(
+        svgs[layer], media_type="image/svg+xml",
+        headers={"Content-Disposition":
+                 'attachment; filename="review_%s_%s.svg"'
+                 % (review_id[:8], layer)})

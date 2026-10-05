@@ -1,0 +1,5 @@
+{
+  "default_clearance_mm": 0.2,
+  "clearance_overrides": [],
+  "keepouts": []
+}

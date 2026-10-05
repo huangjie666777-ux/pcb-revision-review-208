@@ -1,0 +1,12 @@
+G04 review demo new bottom (new coords, shift -2mm): shrunk GND pour *
+%FSLAX24Y24*%
+%MOMM*%
+%LPD*%
+G36*
+X-20000Y0D02*
+X20000Y0D01*
+X20000Y30000D01*
+X-20000Y30000D01*
+X-20000Y0D01*
+G37*
+M02*
